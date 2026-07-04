@@ -18,6 +18,8 @@ using json = nlohmann::json;
 
 #if defined(_WIN32)
 #include <windows.h>
+#define popen _popen
+#define pclose _pclose
 #else
 #include <unistd.h>
 #include <sys/types.h>
