@@ -1,0 +1,1 @@
+/Applications/CMake.app/Contents/bin/cmake --build --preset default
