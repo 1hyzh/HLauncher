@@ -43,6 +43,25 @@ SDL_Texture* load_texture_from_file(SDL_Renderer* renderer, const std::filesyste
     return texture;
 }
 
+std::filesystem::path get_app_dir(const std::string& app_name = "HLauncher") {
+#if defined(_WIN32)
+    if (const char* appdata = std::getenv("APPDATA")) {
+        return std::filesystem::path(appdata) / app_name;
+    }
+    return std::filesystem::current_path() / app_name;
+#elif defined(__APPLE__)
+    if (const char* home = std::getenv("HOME")) {
+        return std::filesystem::path(home) / "Library" / "Application Support" / app_name;
+    }
+    return std::filesystem::current_path() / app_name;
+#else
+    if (const char* home = std::getenv("HOME")) {
+        return std::filesystem::path(home) / ".local" / "share" / app_name;
+    }
+    return std::filesystem::current_path() / app_name;
+#endif
+}
+
 void apply_premium_theme() {
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowPadding = ImVec2(20.0f, 20.0f);
@@ -647,7 +666,7 @@ int LauncherWindow::run(int argc, char** argv) {
                             img_id = (ImTextureID)(uintptr_t)project_textures_[proj.id];
                         }
                     } else {
-                        std::filesystem::path app_dir = std::filesystem::path(std::getenv("HOME")) / "Library" / "Application Support" / "HLauncher";
+                        std::filesystem::path app_dir = get_app_dir("HLauncher");
                         std::filesystem::path cache_dir = app_dir / "cache" / "icons";
                         
                         std::string ext = ".png";

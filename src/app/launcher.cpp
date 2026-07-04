@@ -936,35 +936,124 @@ bool Launcher::launch_instance_async(const std::string& name, bool force_mock) {
         }
 
 #if defined(_WIN32)
-        std::string full_cmd;
-        for (const auto& arg : args) {
-            full_cmd += "\"" + arg + "\" ";
-        }
-        full_cmd += "2>&1";
+        // Set up the security attributes structure to allow pipe handles to be inherited.
+        SECURITY_ATTRIBUTES saAttr;
+        saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+        saAttr.bInheritHandle = TRUE;
+        saAttr.lpSecurityDescriptor = NULL;
 
-        FILE* pipe = _popen(full_cmd.c_str(), "r");
-        if (!pipe) {
+        HANDLE hChildStd_OUT_Rd = NULL;
+        HANDLE hChildStd_OUT_Wr = NULL;
+
+        // Create a pipe for the child process's STDOUT/STDERR.
+        if (!CreatePipe(&hChildStd_OUT_Rd, &hChildStd_OUT_Wr, &saAttr, 0)) {
             std::lock_guard<std::mutex> lock(game_mutex_);
-            game_logs_.push_back("[Launcher/ERROR] Failed to spawn process.");
+            game_logs_.push_back("[Launcher/ERROR] Stdout pipe creation failed.");
             std::lock_guard<std::mutex> lock2(mutex_);
             is_game_running_ = false;
             status_message_ = "Launch failed.";
             return;
         }
 
-        char buffer[256];
-        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            std::string line(buffer);
-            if (!line.empty() && line.back() == '\n') {
-                line.pop_back();
-            }
-            if (!line.empty() && line.back() == '\r') {
-                line.pop_back();
-            }
+        // Ensure the read handle to the pipe for STDOUT is not inherited.
+        if (!SetHandleInformation(hChildStd_OUT_Rd, HANDLE_FLAG_INHERIT, 0)) {
             std::lock_guard<std::mutex> lock(game_mutex_);
-            game_logs_.push_back(line);
+            game_logs_.push_back("[Launcher/ERROR] Stdout pipe handle configuration failed.");
+            CloseHandle(hChildStd_OUT_Rd);
+            CloseHandle(hChildStd_OUT_Wr);
+            std::lock_guard<std::mutex> lock2(mutex_);
+            is_game_running_ = false;
+            status_message_ = "Launch failed.";
+            return;
         }
-        _pclose(pipe);
+
+        // Build the command line string.
+        std::string cmd_line;
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            cmd_line += "\"" + args[i] + "\"";
+            if (i + 1 < args.size()) {
+                cmd_line += " ";
+            }
+        }
+
+        // Make a mutable copy of the command line string (CreateProcessA requires it)
+        std::vector<char> cmd_line_chars(cmd_line.begin(), cmd_line.end());
+        cmd_line_chars.push_back('\0');
+
+        PROCESS_INFORMATION piProcInfo;
+        STARTUPINFOA siStartInfo;
+        ZeroMemory(&piProcInfo, sizeof(PROCESS_INFORMATION));
+        ZeroMemory(&siStartInfo, sizeof(STARTUPINFOA));
+        siStartInfo.cb = sizeof(STARTUPINFOA);
+        siStartInfo.hStdError = hChildStd_OUT_Wr;
+        siStartInfo.hStdOutput = hChildStd_OUT_Wr;
+        siStartInfo.dwFlags |= STARTF_USESTDHANDLES;
+
+        // Create the child process.
+        BOOL bSuccess = CreateProcessA(
+            NULL, 
+            cmd_line_chars.data(), 
+            NULL,          
+            NULL,          
+            TRUE,          
+            CREATE_NO_WINDOW, 
+            NULL,          
+            NULL,          
+            &siStartInfo,  
+            &piProcInfo    
+        );
+
+        // Close the write end of the pipe in the parent process so ReadFile knows when EOF is reached
+        CloseHandle(hChildStd_OUT_Wr);
+
+        if (!bSuccess) {
+            std::lock_guard<std::mutex> lock(game_mutex_);
+            game_logs_.push_back("[Launcher/ERROR] CreateProcessA failed to start the game process (Error: " + std::to_string(GetLastError()) + ").");
+            CloseHandle(hChildStd_OUT_Rd);
+            std::lock_guard<std::mutex> lock2(mutex_);
+            is_game_running_ = false;
+            status_message_ = "Launch failed.";
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            game_process_handle_ = piProcInfo.hProcess;
+        }
+
+        // Read output from the child process's pipe.
+        char buffer[256];
+        DWORD dwRead;
+        std::string line_accumulator;
+        while (ReadFile(hChildStd_OUT_Rd, buffer, sizeof(buffer) - 1, &dwRead, NULL) && dwRead > 0) {
+            buffer[dwRead] = '\0';
+            for (DWORD i = 0; i < dwRead; ++i) {
+                if (buffer[i] == '\n') {
+                    std::lock_guard<std::mutex> lock(game_mutex_);
+                    game_logs_.push_back(line_accumulator);
+                    line_accumulator.clear();
+                } else if (buffer[i] != '\r') {
+                    line_accumulator.push_back(buffer[i]);
+                }
+            }
+        }
+        if (!line_accumulator.empty()) {
+            std::lock_guard<std::mutex> lock(game_mutex_);
+            game_logs_.push_back(line_accumulator);
+        }
+
+        // Wait for the process to terminate.
+        WaitForSingleObject(piProcInfo.hProcess, INFINITE);
+
+        // Clean up handles.
+        CloseHandle(hChildStd_OUT_Rd);
+        CloseHandle(piProcInfo.hThread);
+        
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            CloseHandle(piProcInfo.hProcess);
+            game_process_handle_ = nullptr;
+        }
 #else
         int pipefd[2];
         if (pipe(pipefd) == -1) {
@@ -1056,7 +1145,10 @@ bool Launcher::launch_instance_async(const std::string& name, bool force_mock) {
 
 void Launcher::kill_game_process() {
 #if defined(_WIN32)
-    // No-op for now on Windows
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (game_process_handle_ != nullptr) {
+        TerminateProcess(static_cast<HANDLE>(game_process_handle_), 1);
+    }
 #else
     int pid_to_kill = -1;
     {
