@@ -457,9 +457,9 @@ int LauncherWindow::run(int argc, char** argv) {
             ImGui::InputText("Custom JVM Arguments", settings_jvm_args_, sizeof(settings_jvm_args_));
             ImGui::TextDisabled("Pass custom flags to the JVM (e.g. -XX:+UseG1GC).");
 
-            ImGui::Spacing();
-            ImGui::Checkbox("Always run simulation (mock launch)", &settings_force_mock_);
-            ImGui::TextDisabled("If enabled, bypass Java execution and run the Mock client screen.");
+            //ImGui::Spacing();
+            //ImGui::Checkbox("Always run simulation (mock launch)", &settings_force_mock_);
+            //ImGui::TextDisabled("If enabled, bypass Java execution and run the Mock client screen.");
 
             ImGui::Spacing();
             ImGui::Separator();
@@ -830,7 +830,7 @@ int LauncherWindow::run(int argc, char** argv) {
                         launcher_.launch_instance_async(instance.name, force_mock_);
                     }
                     ImGui::SameLine();
-                    ImGui::Checkbox("Launch simulation (no Java required)", &force_mock_);
+                    //ImGui::Checkbox("Launch simulation (no Java required)", &force_mock_);
 
                     ImGui::Spacing();
                     if (ImGui::Button("GET MODS / ADDONS (MODRINTH)", ImVec2(320, 45))) {
